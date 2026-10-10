@@ -1,0 +1,36 @@
+name: Myntra price watch
+
+on:
+  schedule:
+    - cron: "*/20 * * * *"   # every 20 min (GitHub may delay runs by a few minutes)
+  workflow_dispatch:
+    inputs:
+      test:
+        description: "Send a test Telegram message"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check price
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TEST_MODE: ${{ inputs.test }}
+        run: python price_watch.py
+      - name: Save alert state
+        run: |
+          git config user.name "price-bot"
+          git config user.email "price-bot@users.noreply.github.com"
+          git add state.json 2>/dev/null || true
+          git diff --cached --quiet || (git commit -m "update price state" && git push)
