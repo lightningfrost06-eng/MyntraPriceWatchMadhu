@@ -8,6 +8,7 @@ import json
 import os
 import re
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
@@ -19,12 +20,21 @@ THRESHOLD = 5000
 HERE = Path(__file__).resolve().parent
 STATE = HERE / "state.json"
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/126.0 Safari/537.36",
-    "Accept": "text/html",
-    "Accept-Language": "en-US,en;q=0.9",
-}
+DESKTOP_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
+MOBILE_UA = ("Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 "
+             "(KHTML, like Gecko) Chrome/126.0 Mobile Safari/537.36")
+
+# Myntra sometimes treats cloud IPs differently; try a few browser-like profiles.
+HEADER_VARIANTS = [
+    {"User-Agent": DESKTOP_UA, "Accept": "text/html", "Accept-Language": "en-US,en;q=0.9"},
+    {"User-Agent": DESKTOP_UA,
+     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+     "Accept-Language": "en-IN,en;q=0.9", "Referer": "https://www.google.com/",
+     "Upgrade-Insecure-Requests": "1", "Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate",
+     "Sec-Fetch-Site": "cross-site", "Sec-Fetch-User": "?1"},
+    {"User-Agent": MOBILE_UA, "Accept": "text/html", "Accept-Language": "en-IN,en;q=0.9"},
+]
 
 
 def log(msg):
@@ -32,12 +42,23 @@ def log(msg):
 
 
 def get_price():
-    req = urllib.request.Request(URL, headers=HEADERS)
-    html = urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "ignore")
-    m = re.search(r'"discounted"\s*:\s*(\d+)', html) or re.search(r'"mrp"\s*:\s*(\d+)', html)
-    if not m:
-        raise ValueError("price not found in page (layout changed or request blocked)")
-    return int(m.group(1))
+    for i, headers in enumerate(HEADER_VARIANTS, 1):
+        try:
+            resp = urllib.request.urlopen(urllib.request.Request(URL, headers=headers), timeout=30)
+            status, html = resp.status, resp.read().decode("utf-8", "ignore")
+        except urllib.error.HTTPError as e:
+            status, html = e.code, e.read().decode("utf-8", "ignore")
+        except Exception as e:
+            log(f"variant {i}: request failed: {e!r}")
+            continue
+        m = re.search(r'"discounted"\s*:\s*(\d+)', html) or re.search(r'"mrp"\s*:\s*(\d+)', html)
+        if m:
+            return int(m.group(1))
+        title = re.search(r"<title[^>]*>(.*?)</title>", html, re.S | re.I)
+        snippet = re.sub(r"\s+", " ", html[:400])
+        log(f"variant {i}: status={status} len={len(html)} "
+            f"title={title.group(1).strip()[:100] if title else None!r} start={snippet!r}")
+    raise ValueError("price not found in page (layout changed or request blocked)")
 
 
 def send_telegram(cfg, text):
